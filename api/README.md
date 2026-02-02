@@ -165,11 +165,207 @@ You can test the API directly from the Swagger UI!
 
 ```
 api/
-├── main.py           # FastAPI application entry point
-├── models.py         # Pydantic models for request/response
-├── requirements.txt  # Python dependencies
-├── .env.example      # Example environment variables
-└── README.md         # This file
+├── main.py                  # FastAPI application entry point
+├── models.py                # Pydantic models for request/response
+├── requirements.txt         # Python dependencies
+├── .env.example             # Example environment variables
+├── README.md                # This file
+└── intelligence/            # Intelligence extraction module
+    ├── __init__.py          # Module exports
+    ├── README.md            # Module documentation
+    ├── patterns.py          # Regex patterns for extraction
+    ├── extractor.py         # Main IntelligenceExtractor class
+    ├── link_analyzer.py     # URL phishing analysis (WHOIS/DDG)
+    └── session_store.py     # Session-based intelligence aggregation
+```
+
+---
+
+## Testing Intelligence Extraction
+
+The API automatically extracts scam indicators from every incoming message. To test this functionality:
+
+### Test 1: Scam Message with Multiple Indicators
+
+```bash
+curl -X POST http://localhost:8000/honeypot \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: my-super-secret-key-123" \
+  -d '{
+    "sessionId": "intel-test-001",
+    "message": {
+      "sender": "scammer",
+      "text": "URGENT! Pay Rs 500 to scammer@okicici or visit http://fake-bank.xyz. Call +919876543210 now!",
+      "timestamp": "2026-02-02T10:00:00Z"
+    },
+    "conversationHistory": []
+  }'
+```
+
+**Check server terminal for extraction logs:**
+```
+[SESSION: intel-test-001] Received message from scammer
+[SESSION: intel-test-001] Extracted: UPI IDs: scammer@okicici; Phone numbers: +919876543210; Suspicious links: http://fake-bank.xyz; Keywords: urgent, pay, bank
+[SESSION: intel-test-001] Session scam detected: True
+```
+
+### Test 2: Verify Extraction Directly (Python)
+
+```bash
+cd api
+python -c "
+from intelligence import IntelligenceExtractor
+import json
+
+extractor = IntelligenceExtractor()
+result = extractor.extract('Pay to scammer@okicici or visit http://fake-bank.xyz. Call +919876543210')
+print(json.dumps(result, indent=2, default=str))
+"
+```
+
+**Expected Output:**
+```json
+{
+  "bankAccounts": [],
+  "upiIds": ["scammer@okicici"],
+  "phishingLinks": ["http://fake-bank.xyz"],
+  "phoneNumbers": ["+919876543210"],
+  "suspiciousKeywords": ["pay", "bank"],
+  "emails": [],
+  "allLinks": ["http://fake-bank.xyz"],
+  "linkReports": [
+    {
+      "url": "http://fake-bank.xyz",
+      "risk": "SUSPICIOUS",
+      "reasons": ["Suspicious TLD: .xyz"],
+      "domain": "fake-bank.xyz",
+      "domain_age_days": null
+    }
+  ]
+}
+```
+
+### Test 3: Verify Session Aggregation
+
+```bash
+cd api
+python -c "
+from intelligence import IntelligenceExtractor, session_store
+import json
+
+extractor = IntelligenceExtractor()
+
+# Clear and start new session
+session_store.clear_session('test-session')
+
+# Add first message intel
+intel1 = extractor.extract('Pay to scammer@okicici immediately!')
+session_store.add_intelligence('test-session', intel1)
+
+# Add second message intel
+intel2 = extractor.extract('Call +919876543210 for help')
+session = session_store.add_intelligence('test-session', intel2)
+
+# Check aggregated result
+print('Aggregated Intelligence:')
+print(json.dumps(session.to_dict(), indent=2))
+print('\\nScam Detected:', session.scam_detected)
+print('Message Count:', session.message_count)
+"
+```
+
+### Test 4: Verify GUVI Payload Format
+
+```bash
+cd api
+python -c "
+from intelligence import session_store
+import json
+
+# Assuming session exists from previous test
+payload = session_store.get_final_payload('test-session', 'Scammer used urgency tactics')
+print(json.dumps(payload, indent=2))
+"
+```
+
+**Expected GUVI-compatible payload:**
+```json
+{
+  "sessionId": "test-session",
+  "scamDetected": true,
+  "totalMessagesExchanged": 2,
+  "extractedIntelligence": {
+    "bankAccounts": [],
+    "upiIds": ["scammer@okicici"],
+    "phishingLinks": [],
+    "phoneNumbers": ["+919876543210"],
+    "suspiciousKeywords": ["pay", "immediately"]
+  },
+  "agentNotes": "Scammer used urgency tactics"
+}
+```
+
+---
+
+## What Gets Extracted
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| UPI IDs | `name@bankhandle` | `scammer@okicici` |
+| Phone Numbers | Indian mobile (+91...) | `+919876543210` |
+| Bank Accounts | 9-18 digits with context | `123456789012` |
+| URLs | http/https links | `http://fake-bank.xyz` |
+| Emails | Standard email format | `victim@gmail.com` |
+| Keywords | Urgency, threats, etc. | `urgent`, `blocked`, `verify` |
+
+---
+
+## Link Risk Analysis
+
+URLs are automatically analyzed with enhanced phishing detection:
+
+### Risk Levels
+| Level | Description |
+|-------|-------------|
+| `CRITICAL` | Institutional rule violation (bank without .bank.in, govt without .gov.in) |
+| `HIGH_RISK` | Subdomain masking, typosquatting, shady TLD, new domain |
+| `SUSPICIOUS` | Moderate concerns |
+| `SAFE` | No issues found |
+
+### Detection Rules
+
+| Check | Criteria | Risk Level |
+|-------|----------|------------|
+| **Institutional (Bank)** | Bank context but not `.bank.in` | CRITICAL |
+| **Institutional (Govt)** | Fines/taxes but not `.gov.in` | CRITICAL |
+| **Subdomain Masking** | `sbi.bank.in.fake.com` | CRITICAL |
+| **Typosquatting** | `sbi-bank.in`, `hdlc.com` | HIGH_RISK |
+| **Shady TLD** | `.xyz`, `.vip`, `.top`, `.buzz` | HIGH_RISK |
+| **Domain Age** | Created < 30 days ago | HIGH_RISK |
+| **IP Address URL** | `http://192.168.1.1/...` | HIGH_RISK |
+| **Web Reputation** | Scam reports found | HIGH_RISK |
+
+### Test Enhanced Link Analysis
+
+```bash
+cd api
+python -c "
+from intelligence import IntelligenceExtractor
+import json
+
+extractor = IntelligenceExtractor()
+
+# Banking scam: Wrong TLD
+result = extractor.extract('Your HDFC account is blocked! Click http://hdfc.com/verify')
+print('Risk:', result['linkReports'][0]['risk'])
+print('Reason:', result['linkReports'][0]['reasons'][0])
+"
+```
+
+**Output:**
+```
+Risk: CRITICAL
+Reason: Bank context but URL is not .bank.in (domain: hdfc.com)
 ```
 
 ---
@@ -221,8 +417,9 @@ x-api-key: YOUR_API_KEY
 
 ## Next Steps (TODO)
 
-- [ ] Step 2: Add scam detection logic
-- [ ] Step 3: Add AI agent for response generation
-- [ ] Step 4: Intelligence extraction
+- [x] ~~Step 1: API endpoint structure~~
+- [x] ~~Step 2: Intelligence extraction (UPI, phone, links, keywords)~~
+- [x] ~~Step 3: Link phishing analysis (WHOIS, DDG)~~
+- [ ] Step 4: AI agent for response generation
 - [ ] Step 5: GUVI callback integration
 - [ ] Step 6: Deploy to cloud

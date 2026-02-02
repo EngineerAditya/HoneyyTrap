@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from models import HoneypotRequest, HoneypotResponse, ErrorResponse
+from intelligence import IntelligenceExtractor, session_store
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -33,6 +35,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize Intelligence Extractor
+extractor = IntelligenceExtractor()
 
 
 # ============== API KEY AUTHENTICATION ==============
@@ -81,9 +86,10 @@ def process_message(
     This endpoint:
     1. Receives a message from the evaluation system
     2. Validates the request format
-    3. (TODO) Detects scam intent
-    4. (TODO) Generates agent response
-    5. Returns the response
+    3. Extracts intelligence (UPI, phones, links, etc.)
+    4. Analyzes links for phishing indicators
+    5. (TODO) Generates agent response
+    6. Returns the response
     
     Headers Required:
         x-api-key: Your API key
@@ -91,12 +97,39 @@ def process_message(
     """
     
     # Log the incoming request (for debugging)
-    print(f"[SESSION: {request.sessionId}] Received message from {request.message.sender}")
+    print(f"\n[SESSION: {request.sessionId}] Received message from {request.message.sender}")
     print(f"[SESSION: {request.sessionId}] Message: {request.message.text}")
     print(f"[SESSION: {request.sessionId}] History length: {len(request.conversationHistory)}")
     
-    # TODO: Step 2 - Add scam detection logic here
+    # ============== INTELLIGENCE EXTRACTION ==============
+    
+    # Check if this is a new conversation (empty history = fresh start)
+    if len(request.conversationHistory) == 0:
+        print(f"[SESSION: {request.sessionId}] New conversation - clearing session data")
+        session_store.clear_session(request.sessionId)
+    
+    # Extract intelligence from the current message
+    current_intel = extractor.extract(request.message.text)
+    
+    # Log extracted intelligence
+    if any(current_intel.get(k) for k in ["upiIds", "phoneNumbers", "phishingLinks", "bankAccounts"]):
+        print(f"[SESSION: {request.sessionId}] Extracted: {extractor.get_summary(current_intel)}")
+    
+    # Add to session store
+    session = session_store.add_intelligence(request.sessionId, current_intel)
+    
+    # Log aggregated session intelligence
+    print(f"[SESSION: {request.sessionId}] Session scam detected: {session.scam_detected}")
+    print(f"[SESSION: {request.sessionId}] Total messages: {session.message_count}")
+    
+    # Get aggregated intelligence for LLM context
+    llm_context = session.to_llm_context()
+    print(f"[SESSION: {request.sessionId}] Aggregated intelligence: {llm_context}")
+    
+    # ============== RESPONSE GENERATION ==============
+    
     # TODO: Step 3 - Add AI agent response generation here
+    # The llm_context can be passed to the LLM for context-aware responses
     
     # For now, return a placeholder response
     # This proves the API structure is working correctly
@@ -106,6 +139,7 @@ def process_message(
         status="success",
         reply=placeholder_reply
     )
+
 
 
 # ============== RUN SERVER ==============
