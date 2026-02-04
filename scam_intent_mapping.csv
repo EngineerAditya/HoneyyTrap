@@ -1,0 +1,20 @@
+keyword,scam_category,confidence_weight
+job,JOB_SCAM,0.9
+interview,JOB_SCAM,0.85
+offer letter,JOB_SCAM,0.95
+salary,JOB_SCAM,0.7
+invoice,BUSINESS_SCAM,0.9
+vendor payment,BUSINESS_SCAM,0.85
+business proposal,BUSINESS_SCAM,0.9
+account blocked,BANKING_SCAM,0.95
+kyc update,BANKING_SCAM,0.9
+upi,UPI_SCAM,0.95
+otp,UPI_SCAM,0.95
+loan approval,LOAN_SCAM,0.9
+instant loan,LOAN_SCAM,0.85
+investment,INVESTMENT_SCAM,0.8
+crypto returns,INVESTMENT_SCAM,0.9
+lottery,LOTTERY_SCAM,0.95
+prize won,LOTTERY_SCAM,0.95
+police,GOVERNMENT_IMPERSONATION,0.9
+customs officer,GOVERNMENT_IMPERSONATION,0.9

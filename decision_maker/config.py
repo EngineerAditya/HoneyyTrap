@@ -1,0 +1,8 @@
+# Model thresholds
+ACTIVATE_THRESHOLD = 5
+CLARIFY_THRESHOLD = 3
+
+# Honey-Pot Pipeline constants
+INITIAL_THRESHOLD = 5
+THRESHOLD_INCREMENT = 3
+MAX_MESSAGES = 18
