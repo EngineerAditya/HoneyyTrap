@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-dotenv
+pydantic
+requests
+tldextract
+whois
+duckduckgo-search
+openai
+tenacity
