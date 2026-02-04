@@ -39,6 +39,9 @@ class SessionIntelligence:
     # Dynamic analysis (updated each message)
     _latest_analysis: Optional[ScamAnalysis] = field(default=None, repr=False)
     
+    # Agent State (for State Machine)
+    agent_state: str = "INITIAL_CONTACT"
+    
     def to_dict(self) -> dict:
         """Convert to dictionary matching GUVI hackathon schema."""
         return {

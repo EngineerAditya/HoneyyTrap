@@ -33,6 +33,16 @@ class UrgencyLevel(str, Enum):
     LOW = "low"         # No time pressure
 
 
+class ScamIntent(str, Enum):
+    """Scammer's intent in the current message."""
+    REQUEST_INFO = "request_info"       # "Send your UPI ID"
+    PROVIDE_INFO = "provide_info"       # "Here is my bank details"
+    REFUSAL = "refusal"                 # "I cannot send that" (Unlikely from scammer, but possible)
+    PUSHBACK = "pushback"               # "Why are you asking?" / "Do it now!"
+    CHIT_CHAT = "chit_chat"             # "Hello" / "How are you?"
+    UNKNOWN = "unknown"
+
+
 @dataclass
 class ScamAnalysis:
     """Complete scam analysis result."""
@@ -42,6 +52,7 @@ class ScamAnalysis:
     impersonating: Optional[str]  # "SBI", "RBI", "Police", etc.
     threats: List[str]  # ["account blocked", "legal action"]
     asks_for: List[str]  # ["OTP", "UPI ID", "bank details"]
+    intent: Optional[ScamIntent] = None
     
     def to_dict(self) -> dict:
         return {
@@ -50,7 +61,8 @@ class ScamAnalysis:
             "urgency": self.urgency.value,
             "impersonating": self.impersonating,
             "threats": self.threats,
-            "asksFor": self.asks_for
+            "asksFor": self.asks_for,
+            "intent": self.intent.value if self.intent else None
         }
 
 
@@ -169,6 +181,11 @@ class ScamClassifier:
         'deadline', 'expire', 'last chance'
     }
     
+    # === INTENT KEYWORDS ===
+    REQUEST_INDICATORS = {'send', 'share', 'give', 'provide', 'verify', 'submit', 'tell', 'fill'}
+    PROVIDE_INDICATORS = {'here is', 'sending', 'details are', 'account is', 'pay to', 'click this'}
+    PUSHBACK_INDICATORS = {'why', 'no', 'cannot', 'dont', 'stop', 'hurry', 'trust me', 'do not worry'}
+    
     def classify(self, text: str, intel: dict) -> ScamAnalysis:
         """
         Analyze text and intelligence to classify scam.
@@ -200,14 +217,38 @@ class ScamClassifier:
         # Detect what scammer asks for
         asks_for = self._detect_asks_for(text_lower)
         
+        # Detect intent
+        intent = self._detect_intent(text_lower, asks_for, intel)
+        
         return ScamAnalysis(
             scam_type=scam_type,
             confidence=confidence,
             urgency=urgency,
             impersonating=impersonating,
             threats=threats,
-            asks_for=asks_for
+            asks_for=asks_for,
+            intent=intent
         )
+    
+    def _detect_intent(self, text: str, asks_for: List[str], intel: dict) -> ScamIntent:
+        """Detect the intent of the message."""
+        # If asking for something -> REQUEST_INFO
+        if asks_for or any(ind in text for ind in self.REQUEST_INDICATORS):
+            return ScamIntent.REQUEST_INFO
+            
+        # If providing bank/upi details -> PROVIDE_INFO
+        if intel.get("bankAccounts") or intel.get("upiIds") or intel.get("phishingLinks"):
+            return ScamIntent.PROVIDE_INFO
+            
+        # If pushback language -> PUSHBACK
+        if any(ind in text for ind in self.PUSHBACK_INDICATORS):
+            return ScamIntent.PUSHBACK
+            
+        # Default fallback
+        if len(text.split()) < 5:
+            return ScamIntent.CHIT_CHAT
+            
+        return ScamIntent.UNKNOWN
     
     def _detect_scam_type(self, text: str, intel: dict) -> ScamType:
         """Detect the type of scam based on keywords and intel."""
