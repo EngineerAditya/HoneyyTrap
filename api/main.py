@@ -1,39 +1,43 @@
 """
 Honeypot API - Main FastAPI Application
-
-This is the entry point for the scam detection honeypot.
-The API accepts messages from suspected scammers and returns agent responses.
 """
 
 import os
+import json
+import requests
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+import google.generativeai as genai
+
 from .models import HoneypotRequest, HoneypotResponse, ErrorResponse
 from .intelligence import IntelligenceExtractor, session_store
-import json
 from .agent.manager import AgentManager
 from .agent.states import AgentState
-import requests
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 
 
-# Load environment variables from .env file
+# --------------------------------------------------
+# ENV + CONFIG
+# --------------------------------------------------
 load_dotenv()
 
-# Get API key from environment variable
 API_KEY = os.getenv("HONEYPOT_API_KEY", "test-api-key-change-me")
+GUVI_ENDPOINT = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
 
-# Initialize FastAPI app
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+
+
+# --------------------------------------------------
+# FASTAPI APP
+# --------------------------------------------------
 app = FastAPI(
     title="Honeypot Scam Detection API",
     description="AI-powered honeypot for detecting scams and extracting intelligence",
     version="1.0.0"
 )
 
-# Add CORS middleware (needed for web-based testing tools)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,163 +46,145 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Intelligence Extractor
 extractor = IntelligenceExtractor()
-
-# Initialize Agent Manager
 agent = AgentManager()
 
 
-# ============== API KEY AUTHENTICATION ==============
-
-def verify_api_key(x_api_key: str = Header(..., description="API key for authentication")):
-    """
-    Validates the API key from the request header.
-    Raises 401 if invalid, returns the key if valid.
-    """
+# --------------------------------------------------
+# AUTH
+# --------------------------------------------------
+def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != API_KEY:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid API key"
-        )
+        raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
 
 
-# ============== HEALTH CHECK ==============
-
+# --------------------------------------------------
+# HEALTH
+# --------------------------------------------------
 @app.get("/health")
 def health_check():
-    """
-    Simple health check endpoint.
-    Use this to verify the API is running.
-    """
     return {"status": "healthy", "message": "Honeypot API is running"}
 
 
-# ============== MAIN HONEYPOT ENDPOINT ==============
+# --------------------------------------------------
+# GEMINI REPLY (LLM ONLY TALKS)
+# --------------------------------------------------
+def generate_llm_reply(message_text: str, llm_context: dict, history: list):
+    prompt = f"""
+You are a cautious but cooperative user talking to a potential scammer.
+You NEVER share OTP, PIN, UPI, passwords, or card details.
+Your goal is to delay and extract more information naturally.
 
+Conversation context:
+{json.dumps(llm_context, indent=2)}
+
+Incoming message:
+"{message_text}"
+
+Respond naturally, ask clarifying questions, and stay safe.
+"""
+
+    response = gemini_model.generate_content(
+        prompt,
+        generation_config={
+            "temperature": 0.7,
+            "max_output_tokens": 120
+        }
+    )
+
+    return response.text.strip()
+
+
+# --------------------------------------------------
+# MAIN ENDPOINT
+# --------------------------------------------------
 @app.post(
     "/honeypot",
     response_model=HoneypotResponse,
     responses={
-        401: {"model": ErrorResponse, "description": "Invalid API key"},
-        422: {"model": ErrorResponse, "description": "Validation error"}
+        401: {"model": ErrorResponse},
+        422: {"model": ErrorResponse}
     }
 )
 def process_message(
     request: HoneypotRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    """
-    Main endpoint for processing scam messages.
-    
-    This endpoint:
-    1. Receives a message from the evaluation system
-    2. Validates the request format
-    3. Extracts intelligence (UPI, phones, links, etc.)
-    4. Analyzes links for phishing indicators
-    5. (TODO) Generates agent response
-    6. Returns the response
-    
-    Headers Required:
-        x-api-key: Your API key
-        Content-Type: application/json
-    """
-    
-    # Log the incoming request (for debugging)
-    print(f"\n[SESSION: {request.sessionId}] Received message from {request.message.sender}")
-    print(f"[SESSION: {request.sessionId}] Message: {request.message.text}")
-    print(f"[SESSION: {request.sessionId}] History length: {len(request.conversationHistory)}")
-    
-    # ============== INTELLIGENCE EXTRACTION ==============
-    
-    # Check if this is a new conversation (empty history = fresh start)
+    session_id = request.sessionId
+
+    print(f"\n[SESSION: {session_id}] Message: {request.message.text}")
+
+    # --------------------------------------------------
+    # RESET SESSION IF NEW CONVERSATION
+    # --------------------------------------------------
     if len(request.conversationHistory) == 0:
-        print(f"[SESSION: {request.sessionId}] New conversation - clearing session data")
-        session_store.clear_session(request.sessionId)
-    
-    # Extract intelligence from the current message
+        session_store.clear_session(session_id)
+
+    # --------------------------------------------------
+    # INTELLIGENCE EXTRACTION
+    # --------------------------------------------------
     current_intel = extractor.extract(request.message.text)
-    
-    # Log extracted intelligence
-    if any(current_intel.get(k) for k in ["upiIds", "phoneNumbers", "phishingLinks", "bankAccounts"]):
-        print(f"[SESSION: {request.sessionId}] Extracted: {extractor.get_summary(current_intel)}")
-    
-    # Add to session store
-    session = session_store.add_intelligence(request.sessionId, current_intel)
-    
-    # Log aggregated session intelligence
-    print(f"[SESSION: {request.sessionId}] Session scam detected: {session.scam_detected}")
-    print(f"[SESSION: {request.sessionId}] Total messages: {session.message_count}")
-    
-    # Get aggregated intelligence for LLM context
+    session = session_store.add_intelligence(session_id, current_intel)
+
+    print(f"[SESSION: {session_id}] Scam detected: {session.scam_detected}")
+    print(f"[SESSION: {session_id}] Message count: {session.message_count}")
+
+    # --------------------------------------------------
+    # TERMINATION LOGIC (CRITICAL)
+    # --------------------------------------------------
+    should_terminate = False
+
+    # Non-scam: stop early
+    if not session.scam_detected and session.message_count >= 5:
+        should_terminate = True
+
+    # Scam honeypot: extended conversation
+    elif session.scam_detected and session.message_count >= 15:
+        should_terminate = True
+
+    # --------------------------------------------------
+    # TERMINATE → GUVI CALLBACK
+    # --------------------------------------------------
+    if should_terminate:
+        payload = session_store.get_final_payload(
+            session_id,
+            agent_notes="Auto-generated by Agentic Honeypot"
+        )
+
+        print("\n[CALLBACK PAYLOAD]")
+        print(json.dumps(payload, indent=2))
+
+        try:
+            requests.post(GUVI_ENDPOINT, json=payload, timeout=5)
+        except Exception as e:
+            print(f"[CALLBACK ERROR] {e}")
+
+        return HoneypotResponse(
+            status="success",
+            reply="Thank you. I will check this and get back later."
+        )
+
+    # --------------------------------------------------
+    # LLM CONTEXT + REPLY
+    # --------------------------------------------------
     llm_context = session.to_llm_context()
-    print(f"[SESSION: {request.sessionId}] Aggregated intelligence: {llm_context}")
-    
-    # ============== RESPONSE GENERATION ==============
-    
-    # ============== RESPONSE GENERATION ==============
-    
-    # Generate Agent Response
-    ai_reply = agent.generate_response(request.sessionId, request.message.text)
-    
-    # Check for Callback Trigger
-    # Trigger if:
-    # 1. Scam Detected AND
-    # 2. Agent decided to CONCLUDE (meaning we got what we wanted) OR
-    # 3. We have critical info (Bank Account/UPI) and confidence is high
-    
-    session = session_store.get_session(request.sessionId)
-    if session and session.scam_detected:
-        # Check if we should send callback
-        should_report = False
-        
-        # Condition A: Agent says we are done
-        if session.agent_state == AgentState.CONCLUDE.value:
-            should_report = True
-            
-        # Condition B: robust extraction fallback
-        elif len(session.bank_accounts) > 0 or len(session.upi_ids) > 0:
-             # We have money mule info, report it!
-             should_report = True
-             
-        if should_report:
-            # Run callback in background to not block response
-            # Using a simple thread pool for now or just calling it if it's fast. 
-            # Requests is blocking, better to be safe.
-            # For simplicity in this sync API, we'll just call it.
-            try:
-                send_callback(request.sessionId)
-            except Exception as e:
-                print(f"Callback Error: {e}")
+
+    ai_reply = generate_llm_reply(
+        request.message.text,
+        llm_context,
+        request.conversationHistory
+    )
 
     return HoneypotResponse(
         status="success",
         reply=ai_reply
     )
 
-def send_callback(session_id: str):
-    """Sends the final result to GUVI endpoint."""
-    payload = session_store.get_final_payload(session_id, agent_notes="Auto-generated by Agentic Honeypot")
-    
-    print("\n" + "="*50)
-    print(" [CALLBACK TRIGGERED] FINAL PAYLOAD ")
-    print("="*50)
-    print(json.dumps(payload, indent=2))
-    print("="*50 + "\n")
-    
-    url = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
-    try:
-        resp = requests.post(url, json=payload, timeout=5)
-        print(f"[CALLBACK] Response: {resp.status_code} - {resp.text}")
-    except Exception as e:
-        print(f"[CALLBACK] Failed: {e}")
 
-
-
-# ============== RUN SERVER ==============
-
+# --------------------------------------------------
+# RUN
+# --------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    # Run on port 8000, accessible from all network interfaces
     uvicorn.run(app, host="0.0.0.0", port=8000)
