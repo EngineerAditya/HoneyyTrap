@@ -14,7 +14,7 @@ class Metadata(BaseModel):
 class HoneypotRequest(BaseModel):
     sessionId: str
     message: Message
-    conversationHistory: List[Message] = []
+    conversationHistory: Optional[List[Message]] = None
     metadata: Optional[Metadata] = None
 
 class HoneypotResponse(BaseModel):

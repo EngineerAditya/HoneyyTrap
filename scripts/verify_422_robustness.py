@@ -50,7 +50,7 @@ def run_tests():
         "sessionId": "test-3",
         "message": {"sender": "scammer", "text": "hi"},
         "conversationHistory": None
-    }, expected_status=422) 
+    }, expected_status=200) 
     # NOTE: Pydantic might default this to None if Optional, but it is NOT Optional in the model, just has a default. 
     # If this returns 422, it is strictly correct but maybe annoying for some clients.
 

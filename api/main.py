@@ -113,7 +113,7 @@ def process_message(
     # Always try to backfill from history to handle restarts/statelessness
     session = session_store.backfill_history(
         session_id=session_id, 
-        history=request.conversationHistory,
+        history=request.conversationHistory or [],
         extractor=extractor
     )
     
