@@ -4,12 +4,12 @@ from typing import List, Optional, Any, Dict
 class Message(BaseModel):
     sender: str
     text: str
-    timestamp: Optional[str] = None
+    timestamp: Optional[Any] = None
 
 class Metadata(BaseModel):
-    channel: Optional[str] = None
-    language: Optional[str] = None
-    locale: Optional[str] = None
+    channel: Optional[Any] = None
+    language: Optional[Any] = None
+    locale: Optional[Any] = None
 
 class HoneypotRequest(BaseModel):
     sessionId: str
