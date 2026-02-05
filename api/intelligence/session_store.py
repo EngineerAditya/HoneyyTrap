@@ -262,6 +262,59 @@ class SessionStore:
             "agentNotes": agent_notes
         }
     
+    def backfill_history(self, session_id: str, history: List[dict], extractor: 'IntelligenceExtractor') -> SessionIntelligence:
+        """
+        Backfill session intelligence from conversation history.
+        Crucial for statelessness (server restarts or scaling).
+        
+        Args:
+            session_id: The session identifier
+            history: List of message objects from request
+            extractor: Instance of IntelligenceExtractor to process past messages
+        """
+        session = self.get_or_create(session_id)
+        
+        # If session already has messages, we might not need to backfill
+        # But to be safe (in case of restart), we check if history is longer than current session messages
+        if len(history) > len(session.messages):
+            # We are likely in a fresh session (or lost state)
+            # Process strictly the messages that are NOT in our current session store
+            # For simplicity in this hackathon context, we can just re-process everything if count mismatches
+            # to ensure we capture all intelligence.
+            
+            # Clear current partial state to avoid duplicates during re-processing
+            self.clear_session(session_id)
+            session = self.get_or_create(session_id)
+            
+            for msg in history:
+                text = msg.get("text", "")
+                sender = msg.get("sender", "unknown")
+                timestamp = msg.get("timestamp", "")
+                
+                # Extract intel from this past message
+                # Note: This might be expensive if history is huge, but typically < 20 messages
+                intel = extractor.extract(text)
+                
+                # Add to session
+                self.add_intelligence(session_id, intel, message={
+                    "sender": sender,
+                    "text": text,
+                    "timestamp": timestamp
+                })
+            
+            # Deduce State based on message count if we lost it
+            # Simple heuristic:
+            # 0-2 messages: INITIAL_CONTACT
+            # 3-6 messages: ESTABLISH_TRUST
+            # 7+ messages: EXTRACTION_UPI (or whatever comes next)
+            # Real state will be refined by the next AgentManager call based on intel gaps
+            if session.message_count >= 7:
+                 session.agent_state = "EXTRACTION_UPI" # Default to beginning of extraction
+            elif session.message_count >= 3:
+                 session.agent_state = "ESTABLISH_TRUST"
+            
+        return session
+
     def _generate_agent_notes(self, session: SessionIntelligence) -> str:
         """Auto-generate agent notes from session analysis."""
         notes = []

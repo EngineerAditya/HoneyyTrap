@@ -25,8 +25,9 @@ load_dotenv()
 API_KEY = os.getenv("HONEYPOT_API_KEY", "test-api-key-change-me")
 GUVI_ENDPOINT = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+
+# Agent Manager handles Gemini config now
+
 
 
 # --------------------------------------------------
@@ -70,30 +71,9 @@ def health_check():
 # --------------------------------------------------
 # GEMINI REPLY (LLM ONLY TALKS)
 # --------------------------------------------------
-def generate_llm_reply(message_text: str, llm_context: dict, history: list):
-    prompt = f"""
-You are a cautious but cooperative user talking to a potential scammer.
-You NEVER share OTP, PIN, UPI, passwords, or card details.
-Your goal is to delay and extract more information naturally.
 
-Conversation context:
-{json.dumps(llm_context, indent=2)}
+# Local LLM function removed in favor of AgentManager
 
-Incoming message:
-"{message_text}"
-
-Respond naturally, ask clarifying questions, and stay safe.
-"""
-
-    response = gemini_model.generate_content(
-        prompt,
-        generation_config={
-            "temperature": 0.7,
-            "max_output_tokens": 120
-        }
-    )
-
-    return response.text.strip()
 
 
 # --------------------------------------------------
@@ -116,10 +96,18 @@ def process_message(
     print(f"\n[SESSION: {session_id}] Message: {request.message.text}")
 
     # --------------------------------------------------
-    # RESET SESSION IF NEW CONVERSATION
+    # STATELESS SESSION BACKFILL (ROBUSTNESS)
     # --------------------------------------------------
-    if len(request.conversationHistory) == 0:
-        session_store.clear_session(session_id)
+    # Always try to backfill from history to handle restarts/statelessness
+    session = session_store.backfill_history(
+        session_id=session_id, 
+        history=request.conversationHistory,
+        extractor=extractor
+    )
+    
+    # Reset NOT needed anymore as backfill handles it
+    # if len(request.conversationHistory) == 0:
+    #     session_store.clear_session(session_id)
 
     # --------------------------------------------------
     # INTELLIGENCE EXTRACTION
@@ -168,13 +156,16 @@ def process_message(
     # --------------------------------------------------
     # LLM CONTEXT + REPLY
     # --------------------------------------------------
-    llm_context = session.to_llm_context()
-
-    ai_reply = generate_llm_reply(
-        request.message.text,
-        llm_context,
-        request.conversationHistory
-    )
+    # llm_context generation is now handled inside AgentManager
+    
+    try:
+        ai_reply = agent.generate_response(
+            session_id=session_id,
+            user_text=request.message.text
+        )
+    except Exception as e:
+        print(f"[AGENT ERROR] {e}")
+        ai_reply = "I am having some trouble with my network. Can you repeat?"
 
     return HoneypotResponse(
         status="success",
