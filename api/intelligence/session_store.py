@@ -287,9 +287,9 @@ class SessionStore:
             session = self.get_or_create(session_id)
             
             for msg in history:
-                text = msg.get("text", "")
-                sender = msg.get("sender", "unknown")
-                timestamp = msg.get("timestamp", "")
+                text = msg.text
+                sender = msg.sender
+                timestamp = str(msg.timestamp)
                 
                 # Extract intel from this past message
                 # Note: This might be expensive if history is huge, but typically < 20 messages

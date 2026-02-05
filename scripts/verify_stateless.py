@@ -68,11 +68,11 @@ def verify_statelessness():
     reply2 = send_message(session_id, msg2, history)
     print(f"Agent: {reply2}")
     
-    if reply2 and "link" in reply2.lower() or "what" in reply2.lower(): 
+    if reply2 and ("link" in reply2.lower() or "what" in reply2.lower()): 
         # Basic check to see if it responds coherently
         print("\n[SUCCESS] Agent responded to follow-up.")
     else:
-        print("\n[WARNING] Agent response might indicate context loss.")
+        print(f"\n[WARNING] Agent response might indicate context loss or error. Reply: {reply2}")
 
 if __name__ == "__main__":
     verify_statelessness()
