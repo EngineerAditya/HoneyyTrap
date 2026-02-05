@@ -47,6 +47,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    print(f"[VALIDATION ERROR] {exc}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": jsonable_encoder(exc.errors()), "body": exc.body},
+    )
+from fastapi.encoders import jsonable_encoder
+
 extractor = IntelligenceExtractor()
 agent = AgentManager()
 
@@ -54,7 +66,7 @@ agent = AgentManager()
 # --------------------------------------------------
 # AUTH
 # --------------------------------------------------
-def verify_api_key(x_api_key: str = Header(...)):
+def verify_api_key(x_api_key: str = Header(..., alias="x-api-key")):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
